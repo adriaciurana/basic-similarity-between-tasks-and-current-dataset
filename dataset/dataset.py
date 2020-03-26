@@ -194,12 +194,12 @@ class Dataset:
 
     def parse_dataset(self, dataset, vectors_dataset=None):
         if vectors_dataset is not None:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
                 tuple_data = list(zip(dataset, vectors_dataset))
                 list(tqdm(executor.map(self.add_raw_document_from_tuple, tuple_data), total=len(tuple_data)))
                 
         else: 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
                 list(tqdm(executor.map(self.add_raw_document, dataset), total=len(dataset)))
 
     def __init__(self, num_dimensions, dataset_path=None, vectors_dataset_path=None, num_centroids=1, similarity_metric='cosine', mode='compare'):
@@ -358,6 +358,8 @@ class Dataset:
         # Data is a string
         elif isinstance(data, str):
             vector, _ = self.get_mean_vector(data)
+        else:
+            raise IndexError
 
         vector = self.search_preprocess(vector)
 
@@ -413,7 +415,10 @@ class Dataset:
     def parse_document_json(self, json_path):
         data = {}
         with open(json_path) as json_file:
-            json_data = json.load(json_file)
+            try:
+                json_data = json.load(json_file)
+            except:
+                return None
 
             data['_id'] = json_data['paper_id']
             
@@ -465,9 +470,14 @@ class Dataset:
         for folder_path in filter(lambda folder_path: os.path.isdir(folder_path), glob2.iglob(os.path.join(folder_path, "*"))):
             folder_name = os.path.basename(folder_path)
             print('\tProcessing %s folder' % (folder_name, ))
-            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
                 list_jsons = glob2.glob(os.path.join(folder_path, "**", "*.json"))
                 list(tqdm(executor.map(self.scan_file, list_jsons), total=len(list_jsons)))
+
+    def __swap(self, dataset_temporal_file, dataset_file):
+        if os.path.exists(dataset_file):
+                os.remove(dataset_file)
+            os.rename(dataset_temporal_file, dataset_file)
 
     def save(self):
         raw_dicts = []
@@ -476,11 +486,14 @@ class Dataset:
             raw_dicts.append(doc.raw_dict)
             vector_dicts.append(doc.mean_vector_dict)
 
-        with open(self.dataset_path, 'wb') as handle:
+        with open(self.dataset_path + ".swap", 'wb') as handle:
             pickle.dump(raw_dicts, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
-        with open(self.vectors_dataset_path, 'wb') as handle:
+        with open(self.vectors_dataset_path + ".swap", 'wb') as handle:
             pickle.dump(vector_dicts, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+        self.__swap(self.dataset_path + ".swap", self.dataset_path)
+        self.__swap(self.vectors_dataset_path + ".swap", self.vectors_dataset_path)
 
     """
     ==============================================================================
