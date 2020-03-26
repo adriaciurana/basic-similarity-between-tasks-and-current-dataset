@@ -191,18 +191,42 @@ class Dataset:
     def add_raw_document_from_tuple(self, data):
         self.add_raw_document(paper=data[0], mean_vectors=data[1])
 
-    def parse_dataset(self, dataset, vectors_dataset=None):
+    def parse_dataset(self, vectors_dataset=None):
         if vectors_dataset is not None:
-            map_args = (self.add_raw_document_from_tuple, list(zip(dataset, vectors_dataset)))
+            map_args = (self.add_raw_document_from_tuple, list(zip(self.dataset, vectors_dataset)))
         else:
-            map_args = (self.add_raw_document, dataset)
+            map_args = (self.add_raw_document, self.dataset)
+        len_executor = len(self.dataset)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
-            list(tqdm(executor.map(*map_args), total=len(tuple_data)))
+            list(tqdm(executor.map(*map_args), total=len_executor))
 
-    def __init__(self, num_dimensions, dataset_path=None, vectors_dataset_path=None, num_centroids=1, similarity_metric='cosine', mode='compare'):
-        self.dataset_path = dataset_path
+    def __init__(self, 
+        num_dimensions, 
+        dataset=None, 
+        dataset_path=None, 
+        vectors_dataset_path=None, 
+        num_centroids=1, 
+        similarity_metric='cosine',
+        mode='compare',
+        use_faiss=True):
+        if dataset is not None:
+            dataset_path = dataset
+
+        if isinstance(dataset_path, Dataset):
+            self.dataset = dataset_path.dataset
+            self.dataset_path = dataset_path.dataset_path
+
+        elif isinstance(dataset_path, dict):
+            self.dataset = dataset_path
+            self.dataset_path = None
+
+        else:
+            self.dataset = None
+            self.dataset_path = dataset_path
+
         self.vectors_dataset_path = vectors_dataset_path
+        self.use_faiss = use_faiss
 
         if mode.lower() == 'compare':
             self.compute_vectors = True
@@ -225,30 +249,66 @@ class Dataset:
         # Documents List
         self.documents = []
 
-        if self.dataset_path is not None and os.path.exists(self.dataset_path):
-            print('PARSING DATASET...', end=' ')
+        if  self.dataset is None and self.dataset_path is not None and os.path.exists(self.dataset_path):
             with open(self.dataset_path, 'rb') as handle:
-                dataset = pickle.load(handle)
+                self.dataset = pickle.load(handle)
 
-            if self.vectors_dataset_path is not None and os.path.exists(self.vectors_dataset_path):
-                with open(self.vectors_dataset_path, 'rb') as handle:
-                    vectors_dataset = pickle.load(handle)
-            else:
-                vectors_dataset = None
+        if self.vectors_dataset_path is not None and os.path.exists(self.vectors_dataset_path):
+            with open(self.vectors_dataset_path, 'rb') as handle:
+                vectors_dataset = pickle.load(handle)
+        else:
+            vectors_dataset = None
 
-            self.parse_dataset(dataset, vectors_dataset)
+        if self.dataset is not None:
+            print('PARSING DATASET...', end=' ')
+            self.parse_dataset(vectors_dataset)   
             print('DONE')
 
         if self.compute_vectors and self.create_indexes:
-            print('FAISS INDEXING...', end=' ')
-            self.create_faiss()
-            print('DONE')
+            self.create_lookups()
+
+            if self.use_faiss:
+                print('FAISS INDEXING...', end=' ')
+                self.create_faiss()
+                print('DONE')
 
     """
     ==============================================================================
         SEARCHING
     ==============================================================================
     """
+    def create_lookups(self):
+        # Title train
+        self.lookup_titles = {}
+        self.documents_with_titles = []
+
+        self.lookup_abstracts = {}
+        self.documents_with_abstracts = []
+
+        self.lookup_bodies = {}
+        self.documents_with_bodies = []
+        for doc in self.documents:
+            v_title = doc.mean_vector_title()
+            v_abstract = doc.mean_vector('abstract')
+            v_body = doc.mean_vector('body')
+
+            if not (v_title is None or len(v_title.shape) != 1 and v_title.shape[0] != self.num_dimensions):
+                self.lookup_titles[len(self.documents_with_titles)] = doc
+                self.documents_with_titles.append(v_title)
+
+
+            if not (v_abstract is None or len(v_abstract.shape) != 1 and v_abstract.shape[0] != self.num_dimensions):
+                self.lookup_abstracts[len(self.documents_with_abstracts)] = doc
+                self.documents_with_abstracts.append(v_abstract)
+
+            if not (v_body is None or len(v_body.shape) != 1 and v_body.shape[0] != self.num_dimensions):
+                self.lookup_bodies[len(self.documents_with_bodies)] = doc
+                self.documents_with_bodies.append(v_body)
+
+        self.documents_with_titles = np.stack(self.documents_with_titles, axis=0)
+        self.documents_with_abstracts = np.stack(self.documents_with_abstracts, axis=0)
+        self.documents_with_bodies = np.stack(self.documents_with_bodies, axis=0)
+
     def create_faiss(self):
         quantiser = faiss.IndexFlatL2(self.num_dimensions)
         self.faiss_params = {}
@@ -274,46 +334,24 @@ class Dataset:
             'body': faiss.IndexIVFFlat(quantiser, self.num_dimensions, self.num_centroids, self.faiss_params['metric']),
         }
 
-        # Title train
-        self.lookup_titles = {}
-        documents_with_titles = []
-
-        self.lookup_abstracts = {}
-        documents_with_abstracts = []
-
-        self.lookup_bodies = {}
-        documents_with_bodies = []
-        for doc in self.documents:
-            v_title = doc.mean_vector_title()
-            v_abstract = doc.mean_vector('abstract')
-            v_body = doc.mean_vector('body')
-
-            if not (v_title is None or len(v_title.shape) != 1 and v_title.shape[0] != self.num_dimensions):
-                self.lookup_titles[len(documents_with_titles)] = doc
-                documents_with_titles.append(v_title)
-
-
-            if not (v_abstract is None or len(v_abstract.shape) != 1 and v_abstract.shape[0] != self.num_dimensions):
-                self.lookup_abstracts[len(documents_with_abstracts)] = doc
-                documents_with_abstracts.append(v_abstract)
-
-            if not (v_body is None or len(v_body.shape) != 1 and v_body.shape[0] != self.num_dimensions):
-                self.lookup_bodies[len(documents_with_bodies)] = doc
-                documents_with_bodies.append(v_body)
-
-        vectors = self.search_preprocess(np.stack(documents_with_titles, axis=0), is_train=True)
+        vectors = self.search_preprocess(self.documents_with_titles, is_train=True)
         self.faiss_indices['title'].train(vectors)
         self.faiss_indices['title'].add(vectors)
 
         # Train abstract
-        vectors = self.search_preprocess(np.stack(documents_with_abstracts, axis=0), is_train=True)
+        vectors = self.search_preprocess(self.documents_with_abstracts, is_train=True)
         self.faiss_indices['abstract'].train(vectors)
         self.faiss_indices['abstract'].add(vectors)
 
         # Train full
-        vectors = self.search_preprocess(np.stack(documents_with_bodies, axis=0), is_train=True)
+        vectors = self.search_preprocess(self.documents_with_bodies, is_train=True)
         self.faiss_indices['body'].train(vectors)
         self.faiss_indices['body'].add(vectors)
+
+        # In the case of faiss we can remove this documents lists
+        del self.documents_with_titles
+        del self.documents_with_abstracts
+        del self.documents_with_bodies
 
     def search_preprocess(self, data, is_train=False):
         if self.faiss_params['preprocess_opt'] == 'norm':
@@ -328,6 +366,10 @@ class Dataset:
             return np.float32(np.dot(data, self.faiss_params['mahalanobis_transform'].T))
 
     #def get_docs_that_contain(self, word):
+    def translate_distance_to_pdist(self, dist_name):
+        if dist_name == 'inner':
+            return lambda x, y: x.dot(y)
+        return dist_name
 
 
     def get_similar_docs_than(self, data, k=10, by=None, section=None):
@@ -359,39 +401,44 @@ class Dataset:
         else:
             raise IndexError
 
-        vector = self.search_preprocess(vector)
-        vector = np.expand_dims(vector, axis=0)
+        if self.use_faiss:
+            vector = self.search_preprocess(vector)
+            vector = np.expand_dims(vector, axis=0)
 
-        # Find similars
-        if by == Dataset.TITLE:
-            _, indices = self.faiss_indices['title'].search(vector, k)
-            docs = [self.lookup_titles[idx] for idx in indices[0]]
-        
-        elif by == Dataset.ABSTRACT:
-            _, indices = self.faiss_indices['abstract'].search(vector, k)
-            docs = [self.lookup_abstracts[idx] for idx in indices[0]]
-        
-        elif by == Dataset.SECTION:
-            raise NotImplemented
-        
-        elif by == Dataset.BODY:
-            _, indices = self.faiss_indices['body'].search(vector, k)
-            docs = [self.lookup_bodies[idx] for idx in indices[0]]
+            # Find similars
+            if by == Dataset.TITLE:
+                _, indices = self.faiss_indices['title'].search(vector, k)
+                docs = [self.lookup_titles[idx] for idx in indices[0]]
+            
+            elif by == Dataset.ABSTRACT:
+                _, indices = self.faiss_indices['abstract'].search(vector, k)
+                docs = [self.lookup_abstracts[idx] for idx in indices[0]]
+            
+            elif by == Dataset.SECTION:
+                raise NotImplemented
+            
+            elif by == Dataset.BODY:
+                _, indices = self.faiss_indices['body'].search(vector, k)
+                docs = [self.lookup_bodies[idx] for idx in indices[0]]
+        else:
+            if by == Dataset.TITLE:
+                aux_vectors = self.documents_with_titles
+                aux_lookup = self.lookup_titles
+            
+            elif by == Dataset.ABSTRACT:
+                aux_vectors = self.documents_with_abstracts
+                aux_lookup = self.lookup_abstracts
+            
+            elif by == Dataset.SECTION:
+                raise NotImplemented
+            
+            elif by == Dataset.BODY:
+                aux_vectors = self.documents_with_bodies
+                aux_lookup = self.lookup_bodies
 
-        """if by == Dataset.TITLE:
-            aux_vectors = np.stack([doc.mean_vector_title() for doc in self.documents], axis=0)
-        
-        elif by == Dataset.ABSTRACT:
-            aux_vectors = np.stack([doc.mean_vector('abstract') for doc in self.documents], axis=0)
-        
-        elif by == Dataset.SECTION:
-            raise NotImplemented
-        
-        elif by == Dataset.BODY:
-            aux_vectors = np.stack([doc.mean_vector('body') for doc in self.documents], axis=0)
-
-        distances = distance.cdist(np.expand_dims(vector, axis=0), aux_vectors, "cosine")
-        indices = distances.argsort(axis=-1)[:, :k]"""
+            distances = distance.cdist(np.expand_dims(vector, axis=0), aux_vectors, self.translate_distance_to_pdist(self.similarity_metric))
+            indices = distances.argsort(axis=-1)[:, :k]
+            docs = [aux_lookup[idx] for idx in indices[0]]
 
         return docs
 
@@ -475,8 +522,8 @@ class Dataset:
 
     def __swap(self, dataset_temporal_file, dataset_file):
         if os.path.exists(dataset_file):
-                os.remove(dataset_file)
-            os.rename(dataset_temporal_file, dataset_file)
+            os.remove(dataset_file)
+        os.rename(dataset_temporal_file, dataset_file)
 
     def save(self):
         raw_dicts = []
@@ -527,17 +574,27 @@ class Dataset:
             time.sleep(3600)
 
 class PretrainedSpacyDataset(Dataset):
-    def __init__(self, num_dimensions, dataset_path=None, vectors_dataset_path=None, num_centroids=1, similarity_metric='cosine', mode='compare'):
+    def __init__(self, 
+        num_dimensions, 
+        dataset=None, 
+        dataset_path=None, 
+        vectors_dataset_path=None, 
+        num_centroids=1, 
+        similarity_metric='cosine', 
+        mode='compare',
+        use_faiss=True):
         import scispacy
         import spacy
         self.nlp = spacy.load("en_core_sci_lg")
 
-        super().__init__(num_dimensions=num_dimensions, 
+        super().__init__(dataset=dataset,
+            num_dimensions=num_dimensions, 
             dataset_path=dataset_path, 
             vectors_dataset_path=vectors_dataset_path, 
             num_centroids=num_centroids, 
             similarity_metric=similarity_metric,
-            mode=mode)  
+            mode=mode,
+            use_faiss=use_faiss)  
 
     def get_mean_vector(self, text):
         tokens = self.nlp(text.lower())
@@ -558,19 +615,29 @@ class PretrainedSpacyDataset(Dataset):
         return vectors
 
 class PaperWord2VecDataset(Dataset):
-    def __init__(self, num_dimensions, dataset_path=None, vectors_dataset_path=None, num_centroids=1, similarity_metric='cosine', mode='compare'):
+    def __init__(self, 
+        num_dimensions, 
+        dataset=None, 
+        dataset_path=None, 
+        vectors_dataset_path=None, 
+        num_centroids=1, 
+        similarity_metric='cosine', 
+        mode='compare',
+        use_faiss=True):
         import scispacy
         import spacy
         from gensim.models import KeyedVectors
         self.nlp = spacy.load("en_core_sci_lg")
         self.wv = KeyedVectors.load(os.path.join("models", "word2vec", "word2vec_using_papers.bin"))
 
-        super().__init__(num_dimensions=num_dimensions, 
+        super().__init__(dataset=dataset,
+            num_dimensions=num_dimensions, 
             dataset_path=dataset_path, 
             vectors_dataset_path=vectors_dataset_path, 
             num_centroids=num_centroids, 
             similarity_metric=similarity_metric,
-            mode=mode)  
+            mode=mode,
+            use_faiss=use_faiss)  
 
     def get_mean_vector(self, text):
         vectors = self.get_vectors(text)
@@ -600,7 +667,12 @@ if __name__ == '__main__':
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from config import *
 
-    dataset = PretrainedSpacyDataset(dataset_path=DATASET_PICKLE, vectors_dataset_path=WORD2VEC_VECTORS_DATASET_PICKLE, num_dimensions=200, mode='compare')
+    dataset = PretrainedSpacyDataset(dataset_path=DATASET_PICKLE, vectors_dataset_path=SCAPY_PRETRAINED_VECTORS_DATASET_PICKLE, num_dimensions=200, mode='compare', use_faiss=False)
+    #dataset2 = PretrainedSpacyDataset(dataset=dataset, vectors_dataset_path=None, num_dimensions=200, mode='raw', use_faiss=False)
+    #print(dataset.documents[0].raw_dict is dataset2.documents[0].raw_dict)
+    #print(id(dataset.documents[0].raw_dict))
+    #print(id(dataset2.documents[0].raw_dict))
+    #exit()
     #dataset.save()
     tasks = LOAD_TASKS()
 

@@ -5,16 +5,11 @@ Cleaning pipeline extractd from:
 
 import re
 import unidecode
-
-from tqdm import tqdm
-
 import nltk
 nltk.download('stopwords')
 
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
-
-tqdm.pandas()
 
 """
 Raw text clean

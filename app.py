@@ -22,7 +22,7 @@ CORS(app)
 SERVER_PORT = 7575
 
 # Load dataset
-dataset = PretrainedSpacyDataset(dataset_path=DATASET_PICKLE, vectors_dataset_path=SCAPY_PRETRAINED_VECTORS_DATASET_PICKLE, num_dimensions=200, mode='compare')
+dataset = PretrainedSpacyDataset(dataset_path=DATASET_PICKLE, vectors_dataset_path=SCAPY_PRETRAINED_VECTORS_DATASET_PICKLE, num_dimensions=200, mode='compare', use_faiss=False)
 def back_sync():
     dataset.sync('allen-institute-for-ai/CORD-19-research-challenge', RAW_DATASET_PATH)
 Thread(target=back_sync).start()
