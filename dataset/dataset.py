@@ -9,7 +9,6 @@ from collections import defaultdict, OrderedDict
 
 import schedule
 import time
-import kaggle
 import os
 import glob
 import glob2
@@ -194,13 +193,12 @@ class Dataset:
 
     def parse_dataset(self, dataset, vectors_dataset=None):
         if vectors_dataset is not None:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-                tuple_data = list(zip(dataset, vectors_dataset))
-                list(tqdm(executor.map(self.add_raw_document_from_tuple, tuple_data), total=len(tuple_data)))
-                
-        else: 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-                list(tqdm(executor.map(self.add_raw_document, dataset), total=len(dataset)))
+            map_args = (self.add_raw_document_from_tuple, list(zip(dataset, vectors_dataset)))
+        else:
+            map_args = (self.add_raw_document, dataset)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            list(tqdm(executor.map(*map_args), total=len(tuple_data)))
 
     def __init__(self, num_dimensions, dataset_path=None, vectors_dataset_path=None, num_centroids=1, similarity_metric='cosine', mode='compare'):
         self.dataset_path = dataset_path
@@ -362,21 +360,22 @@ class Dataset:
             raise IndexError
 
         vector = self.search_preprocess(vector)
+        vector = np.expand_dims(vector, axis=0)
 
         # Find similars
         if by == Dataset.TITLE:
-            _, indices = self.faiss_indices['title'].search(np.expand_dims(vector, axis=0), k)
+            _, indices = self.faiss_indices['title'].search(vector, k)
             docs = [self.lookup_titles[idx] for idx in indices[0]]
         
         elif by == Dataset.ABSTRACT:
-            _, indices = self.faiss_indices['abstract'].search(np.expand_dims(vector, axis=0), k)
+            _, indices = self.faiss_indices['abstract'].search(vector, k)
             docs = [self.lookup_abstracts[idx] for idx in indices[0]]
         
         elif by == Dataset.SECTION:
             raise NotImplemented
         
         elif by == Dataset.BODY:
-            _, indices = self.faiss_indices['body'].search(np.expand_dims(vector, axis=0), k)
+            _, indices = self.faiss_indices['body'].search(vector, k)
             docs = [self.lookup_bodies[idx] for idx in indices[0]]
 
         """if by == Dataset.TITLE:
@@ -501,6 +500,9 @@ class Dataset:
     ==============================================================================
     """
     def sync(self, dataset_name, folder_path, callback=None):
+        # Lazy loading to avoid asking for credentials when not syncing
+        import kaggle
+
         def __sync_thread():
             print('Checking new changes...')
             

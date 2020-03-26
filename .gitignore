@@ -134,3 +134,4 @@ dataset/processed/*
 train_extractors/.cache.texts
 visualization/results/*
 train_extractors/**/checkpoints/
+models/
